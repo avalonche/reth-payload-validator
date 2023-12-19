@@ -1,16 +1,27 @@
 use derivative::Derivative;
 use reth::primitives::{Address, Bloom, Bytes, B256, U256};
+use reth::rpc::types::engine::{BlobsBundleV1, ExecutionPayloadV3};
+use reth::rpc::types::kzg::{Bytes48, Blob};
 use reth::rpc::types::{ExecutionPayload, ExecutionPayloadV1, ExecutionPayloadV2, Withdrawal};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
+use superstruct::superstruct;
 
+#[superstruct(
+    variants(Capella, Deneb),
+    variant_attributes(derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize))
+)]
 #[serde_as]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(missing_docs)]
 pub struct ValidationRequestBody {
     pub execution_payload: ExecutionPayloadValidation,
+    #[superstruct(only(Deneb))]
+    pub blobs_bundle: BlobsBundleValidation,
     pub message: BidTrace,
     pub signature: Bytes,
+    #[superstruct(only(Deneb))]
+    pub parent_beacon_block_root: B256,
     #[serde_as(as = "DisplayFromStr")]
     pub registered_gas_limit: u64,
 }
@@ -36,6 +47,10 @@ pub struct BidTrace {
 
 /// Structure to deserialize execution payloads sent according to the builder api spec
 /// Numeric fields deserialized as decimals (unlike crate::eth::engine::ExecutionPayload)
+#[superstruct(
+    variants(Capella, Deneb),
+    variant_attributes(derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize))
+)]
 #[serde_as]
 #[derive(Derivative)]
 #[derivative(Debug)]
@@ -62,6 +77,12 @@ pub struct ExecutionPayloadValidation {
     #[derivative(Debug = "ignore")]
     pub transactions: Vec<Bytes>,
     pub withdrawals: Vec<WithdrawalValidation>,
+    #[serde_as(as = "DisplayFromStr")]
+    #[superstruct(only(Deneb))]
+    pub blob_gas_used: u64,
+    #[serde_as(as = "DisplayFromStr")]
+    #[superstruct(only(Deneb))]
+    pub excess_blob_gas: u64,
 }
 
 /// Withdrawal object with numbers deserialized as decimals
@@ -81,9 +102,21 @@ pub struct WithdrawalValidation {
     pub amount: u64,
 }
 
+/// This includes all bundled blob related data of an execution payload.
+#[serde_as]
+#[derive(Derivative)]
+#[derivative(Debug)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(missing_docs)]
+pub struct BlobsBundleValidation {
+    pub commitments: Vec<Bytes48>,
+    pub proofs: Vec<Bytes48>,
+    pub blobs: Vec<Blob>,
+}
+
 impl From<ExecutionPayloadValidation> for ExecutionPayload {
     fn from(val: ExecutionPayloadValidation) -> Self {
-        ExecutionPayload::V2(ExecutionPayloadV2 {
+        payloadV2 = ExecutionPayload::V2(ExecutionPayloadV2 {
             payload_inner: ExecutionPayloadV1 {
                 parent_hash: val.parent_hash,
                 fee_recipient: val.fee_recipient,
@@ -100,8 +133,34 @@ impl From<ExecutionPayloadValidation> for ExecutionPayload {
                 block_hash: val.block_hash,
                 transactions: val.transactions,
             },
-            withdrawals: val.withdrawals.into_iter().map(|w| w.into()).collect(),
+            withdrawals: inner.withdrawals.into_iter().map(|w| w.into()).collect(),
         })
+        match val {
+            ExecutionPayloadValidation::Capella(inner) => {
+                payloadV2
+            },
+            ExecutionPayloadValidation::Deneb(inner) => {
+                ExecutionPayload::V3(ExecutionPayloadV3 {
+                    payload_inner: ExecutionPayloadV2 {
+                        parent_hash: inner.parent_hash,
+                        fee_recipient: inner.fee_recipient,
+                        state_root: inner.state_root,
+                        receipts_root: inner.receipts_root,
+                        logs_bloom: inner.logs_bloom,
+                        prev_randao: inner.prev_randao,
+                        block_number: inner.block_number,
+                        gas_limit: inner.gas_limit,
+                        gas_used: inner.gas_used,
+                        timestamp: inner.timestamp,
+                        extra_data: inner.extra_data,
+                        base_fee_per_gas: inner.base_fee_per_gas,
+                        block_hash: inner.block_hash,
+                        transactions: inner.transactions,
+                    },
+                    withdrawals: inner.withdrawals.into_iter().map(|w| w.into()).collect(),
+                })
+            }
+        }
     }
 }
 
@@ -112,6 +171,16 @@ impl From<WithdrawalValidation> for Withdrawal {
             validator_index: val.validator_index,
             address: val.address,
             amount: val.amount,
+        }
+    }
+}
+
+impl From<BlobsBundleValidation> for BlobsBundleV1 {
+    fn from(val: BlobsBundleValidation) -> Self {
+        BlobsBundleV1 {
+            blobs: val.blobs,
+            commitments: val.commitments,
+            proofs: val.proofs,
         }
     }
 }
